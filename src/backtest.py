@@ -63,7 +63,10 @@ def simulate(bars: pd.DataFrame, initial_equity=1000.0, risk_fraction=.005,
                 exit_price-=side*slippage_pips*pip
                 reason="ema_close"
             elif (side==1 and row["low"] <= position["stop"]) or (side==-1 and row["high"]+spread_pips*pip >= position["stop"]):
-                exit_price=position["stop"]-side*slippage_pips*pip
+                # If the market gaps past the stop, fill at the worse opening price.
+                open_exit=float(row["open"])+(spread_pips*pip if side==-1 else 0)
+                stop_fill=min(position["stop"],open_exit) if side==1 else max(position["stop"],open_exit)
+                exit_price=stop_fill-side*slippage_pips*pip
                 reason="stop"
             if exit_price is not None:
                 gross=(exit_price-position["entry"])*side/pip*10*position["lots"]
@@ -90,6 +93,16 @@ def simulate(bars: pd.DataFrame, initial_equity=1000.0, risk_fraction=.005,
         if lots < min_lot:
             continue
         position={"entry_time":str(now),"entry":entry,"stop":stop,"side":side,"lots":round(float(lots),4)}
+        # A stop can be hit during the entry bar. Check it immediately.
+        hit=(side==1 and row["low"] <= stop) or (side==-1 and row["high"]+spread_pips*pip >= stop)
+        if hit:
+            exit_price=stop-side*slippage_pips*pip
+            gross=(exit_price-entry)*side/pip*10*position["lots"]
+            fees=2*commission_per_lot_side*position["lots"]
+            pnl=gross-fees
+            equity+=pnl
+            trades.append({**position,"exit_time":str(now),"exit":exit_price,"reason":"entry_bar_stop","pnl":round(pnl,2),"equity":round(equity,2)})
+            position=None
     # No imaginary closing fill: open positions remain marked as unclosed.
     pnls=np.array([t["pnl"] for t in trades], dtype=float)
     curve=np.r_[initial_equity,initial_equity+np.cumsum(pnls)]
